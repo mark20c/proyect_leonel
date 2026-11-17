@@ -1,0 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Nunito', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  margin: 0;
+  background-color: #fffaf5;
+  color: #44403c;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* El mapa de Leaflet debe quedar por debajo del menú fijo */
+.leaflet-container {
+  z-index: 0;
+}

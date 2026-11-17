@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// =====================================================================
+//  Reglas de seguridad de Cloud Storage - Manos Creativas
+//  (Solo aplican si tu proyecto está en el plan Blaze y usas Storage.)
+// =====================================================================
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // MISMA lista que firestore.rules y ADMIN_EMAILS en src/utils/constants.js
+    function esAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in ['22221014@unamad.edu.pe'];
+    }
+
+    // Fotos de productos
+    match /productos/{archivo} {
+      // Cualquiera puede verlas (se muestran en la tienda)
+      allow read: if true;
+
+      // Solo el admin sube fotos: imágenes de menos de 2 MB
+      allow create, update: if esAdmin()
+        && request.resource.size < 2 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      allow delete: if esAdmin();
+    }
+
+    // Cualquier otra carpeta: prohibido
+    match /{todo=**} {
+      allow read, write: if false;
+    }
+  }
+}

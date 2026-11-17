@@ -1,0 +1,138 @@
+rules_version = '2';
+
+// =====================================================================
+//  Reglas de seguridad de Cloud Firestore - Manos Creativas
+//  Se aplican en los servidores de Google: aunque alguien modifique el
+//  código de la página desde el navegador, NO puede saltárselas.
+// =====================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Funciones de ayuda ----------
+
+    function conectado() {
+      return request.auth != null;
+    }
+
+    // Administradores: MISMA lista que ADMIN_EMAILS en src/utils/constants.js
+    // y que storage.rules. El correo debe estar verificado (Google ya lo verifica).
+    function esAdmin() {
+      return conectado()
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in ['22221014@unamad.edu.pe'];
+    }
+
+    function textoValido(valor, min, max) {
+      return valor is string && valor.size() >= min && valor.size() <= max;
+    }
+
+    // ---------- Productos ----------
+
+    function productoValido(p) {
+      return p.keys().hasAll(['nombre', 'descripcion', 'categoria', 'precio', 'stock', 'destacado', 'foto'])
+        && p.keys().hasOnly(['nombre', 'descripcion', 'categoria', 'precio', 'stock', 'destacado', 'foto', 'creadoEn', 'actualizadoEn'])
+        && textoValido(p.nombre, 1, 100)
+        && textoValido(p.descripcion, 1, 1000)
+        && p.categoria in ['tejidos', 'bisuteria', 'ceramica', 'velas', 'madera', 'decoracion']
+        && p.precio is number && p.precio > 0 && p.precio <= 100000
+        && p.stock is int && p.stock >= 0 && p.stock <= 100000
+        && p.destacado is bool
+        && p.foto is string && p.foto.size() <= 2048
+        && (p.foto == '' || p.foto.matches('https://.*'));
+    }
+
+    match /productos/{productoId} {
+      // El catálogo es público
+      allow read: if true;
+
+      // Solo el admin crea, edita o elimina, y siempre con datos válidos
+      allow create: if esAdmin()
+        && productoValido(request.resource.data)
+        && request.resource.data.creadoEn == request.time;
+
+      allow update: if esAdmin()
+        && productoValido(request.resource.data)
+        && request.resource.data.get('creadoEn', null) == resource.data.get('creadoEn', null);
+
+      allow delete: if esAdmin();
+    }
+
+    // ---------- Pedidos ----------
+
+    function itemsValidos(items) {
+      return items is list && items.size() >= 1 && items.size() <= 50;
+    }
+
+    function clienteValido(c) {
+      return c is map
+        && c.keys().hasOnly(['nombre', 'telefono', 'direccion', 'notas'])
+        && textoValido(c.nombre, 1, 100)
+        && c.telefono is string && c.telefono.matches('^9[0-9]{8}$')
+        && textoValido(c.direccion, 1, 200)
+        && textoValido(c.notas, 0, 500);
+    }
+
+    function pedidoNuevoValido(p) {
+      return p.keys().hasOnly(['uid', 'email', 'cliente', 'metodoPago', 'ubicacion', 'items', 'total', 'estado', 'creadoEn', 'privacidad'])
+        && p.uid == request.auth.uid                    // el pedido es de quien lo crea
+        && p.email == request.auth.token.email
+        && p.estado == 'pendiente'                      // nadie se auto-confirma el pago
+        && p.creadoEn == request.time                   // fecha puesta por el servidor
+        && p.metodoPago in ['Yape', 'Plin', 'Transferencia', 'Efectivo contra entrega']
+        && p.total is number && p.total > 0 && p.total <= 100000
+        && itemsValidos(p.items)
+        && clienteValido(p.cliente)
+        // Consentimiento: el cliente marcó la casilla de la Política de privacidad
+        && p.privacidad is map
+        && p.privacidad.keys().hasOnly(['acepto', 'version'])
+        && p.privacidad.acepto == true
+        && textoValido(p.privacidad.version, 1, 20)
+        // La ubicación es opcional
+        && (!('ubicacion' in p) || (
+              p.ubicacion is map
+              && p.ubicacion.keys().hasOnly(['lat', 'lng'])
+              && p.ubicacion.lat is number && p.ubicacion.lng is number));
+    }
+
+    function esDueno() {
+      return conectado() && resource.data.uid == request.auth.uid;
+    }
+
+    // Derecho de cancelación: el cliente borra sus datos personales de un pedido
+    // pagado. Se conserva el registro de la venta (productos, montos, fechas).
+    // Debe coincidir con CLIENTE_ANONIMO en src/service/cuentaService.js
+    function anonimizacionValida() {
+      let d = request.resource.data;
+      return esDueno()
+        && d.diff(resource.data).affectedKeys().hasOnly(['cliente', 'email', 'ubicacion', 'anonimizado'])
+        && d.cliente == {'nombre': 'Cliente eliminado', 'telefono': '', 'direccion': '', 'notas': ''}
+        && d.email == ''
+        && !('ubicacion' in d)
+        && d.anonimizado == true;
+    }
+
+    match /pedidos/{pedidoId} {
+      // Cada cliente ve solo sus pedidos; el admin ve todos
+      allow read: if esAdmin()
+        || (conectado() && resource.data.uid == request.auth.uid);
+
+      // Cualquier usuario conectado puede crear SU pedido, en estado "pendiente"
+      allow create: if conectado() && pedidoNuevoValido(request.resource.data);
+
+      // El admin solo cambia el estado. El cliente solo puede anonimizar sus datos.
+      allow update: if (esAdmin()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['estado', 'actualizadoEn'])
+          && request.resource.data.estado in ['pendiente', 'confirmado', 'entregado', 'cancelado'])
+        || anonimizacionValida();
+
+      // El admin puede borrar cualquiera; el cliente, solo sus pedidos que siguen pendientes
+      allow delete: if esAdmin()
+        || (esDueno() && resource.data.estado == 'pendiente');
+    }
+
+    // ---------- Todo lo demás: prohibido ----------
+    match /{cualquierDocumento=**} {
+      allow read, write: if false;
+    }
+  }
+}
